@@ -19,15 +19,6 @@ Measurements behind the Mazda entry: docs/zoompilot/icbm.md.
 """
 from dataclasses import dataclass
 
-from opendbc.car import structs
-
-SendButtonState = structs.IntelligentCruiseButtonManagement.SendButtonState
-
-
-def tap_equivalent(send_button: SendButtonState) -> SendButtonState:
-  # a hold is CarControlZP.icbmHold; sendButton keeps the direction
-  return send_button
-
 
 @dataclass(frozen=True)
 class ICBMActuationProfile:
