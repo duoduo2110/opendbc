@@ -278,10 +278,6 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     if (!controls_allowed && cruise_active) {
       tx = false;
     }
-    // No lead is advertised: RADAR_HAS_LEAD and RADAR_LEAD_RELATIVE_DISTANCE stay 0 like the empty tracks.
-    if (((msg->data[2] & 0x80U) != 0U) || ((msg->data[3] & 0xe0U) != 0U)) {
-      tx = false;
-    }
   }
 
   bool radar_frame = (msg->addr == MAZDA_RADAR_STATIC) || ((msg->addr >= MAZDA_RADAR_TRACK_1) && (msg->addr <= MAZDA_RADAR_TRACK_6));

@@ -112,15 +112,18 @@ def test_crz_info_accel_encoding_and_checksum(packer, stopping, unlatching):
     assert dat[7] == crz_info_reference_checksum(bytes(bare))
 
 
-@pytest.mark.parametrize("long_active, acc_available, gap, acc_active_2, expected", [
-  (False, False, 0, False, "0201010000000000"),  # standby
-  (False, True, 2, False, "02010b0000000000"),   # MRCC armed, SET allowed
-  (True, True, 2, True, "0a010b0000001000"),     # engaged
-  (True, True, 2, False, "0a010b0000000000"),    # relaxed hold, ACC_ACTIVE_2 drops
-  (True, True, 1, True, "0a01070000001000"),     # wire gap 1 (4 bars on the cluster)
+@pytest.mark.parametrize("long_active, acc_available, gap, lead_distance, acc_active_2, expected", [
+  (False, False, 0, 0, False, "0201010000000000"),  # standby
+  (False, True, 2, 0, False, "02010b0000000000"),   # MRCC armed, SET allowed
+  (False, True, 2, 2, False, "02018b4000000000"),   # MRCC armed, lead ahead
+  (True, True, 2, 0, True, "0a010b0000001000"),     # engaged, no lead
+  (True, True, 2, 2, True, "0a018b4000001000"),     # engaged, following a lead
+  (True, True, 2, 3, True, "0a018b6000001000"),     # stopped behind a lead
+  (True, True, 2, 3, False, "0a018b6000000000"),    # relaxed hold, ACC_ACTIVE_2 drops
+  (True, True, 1, 2, True, "0a01874000001000"),     # wire gap 1 (4 bars on the cluster)
 ])
-def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, acc_active_2, expected):
-  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2)[1]
+def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, lead_distance, acc_active_2, expected):
+  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, lead_distance, acc_active_2)[1]
   assert dat.hex() == expected
 
 
@@ -130,9 +133,9 @@ def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, acc_acti
   (True, True, 2, True, "0a210b0000001000"),     # engaged
 ])
 def test_crz_ctrl_relays_hbc_arming(packer, long_active, acc_available, gap, acc_active_2, expected):
-  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2, hbc_request=True)[1]
+  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, 0, acc_active_2, hbc_request=True)[1]
   assert dat.hex() == expected
-  bare = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2)[1]
+  bare = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, 0, acc_active_2)[1]
   assert bytes(a ^ b for a, b in zip(dat, bare, strict=True)) == bytes([0, 0x20, 0, 0, 0, 0, 0, 0])
 
 

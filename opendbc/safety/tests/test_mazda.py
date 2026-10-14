@@ -213,8 +213,8 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
     values = {"ACCEL_CMD": accel, "ACC_ACTIVE": active}
     return self.packer.make_can_msg_safety("CRZ_INFO", bus, values)
 
-  def _crz_ctrl_cmd_msg(self, active: bool, bus: int = 0, **values):
-    values["CRZ_ACTIVE"] = active
+  def _crz_ctrl_cmd_msg(self, active: bool, bus: int = 0):
+    values = {"CRZ_ACTIVE": active}
     return self.packer.make_can_msg_safety("CRZ_CTRL", bus, values)
 
   def _press_set(self):
@@ -384,14 +384,6 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
 
       self.safety.set_controls_allowed(True)
       self.assertTrue(self._tx(self._crz_ctrl_cmd_msg(True, bus)))
-
-  def test_crz_ctrl_lead_blocked(self):
-    # RADAR_HAS_LEAD and the lead phase stay 0, matching the empty tracks
-    for controls_allowed in (False, True):
-      self.safety.set_controls_allowed(controls_allowed)
-      for bus in (0, 2):
-        for values in ({"RADAR_HAS_LEAD": 1}, {"RADAR_LEAD_RELATIVE_DISTANCE": 2}, {"RADAR_LEAD_RELATIVE_DISTANCE": 4}):
-          self.assertFalse(self._tx(self._crz_ctrl_cmd_msg(False, bus, **values)))
 
   def _pedals_msg(self, armed, brake=0):
     # PEDALS with MRCC armed-but-idle (ACC_OFF), the state that persists across ignition

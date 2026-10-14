@@ -255,13 +255,16 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       bars = int(CC.hudControl.leadDistanceBars) or 2
       gap = (5 - bars) if (long_engaged or acc_available) else 0
       acc_active_2 = sm.acc_active_2 if long_engaged else False
+      # Show the vision lead on the dash with stock's distance bucket: 3 behind a stopped lead,
+      # 2 while following. The tracks stay empty.
+      lead_distance = (3 if CS.out.standstill else 2) if CC.hudControl.leadVisible else 0
       for bus in LONG_BUSES:
         can_sends.append(mazdacan.create_acc_command(self.packer, bus, self.long_counter, accel,
                                                      long_active=long_engaged, acc_available=acc_available,
                                                      brake_pressed=CS.out.brakePressed,
                                                      stopping=sm.stop_bits, resume_unlatching=sm.resume_unlatching))
-        can_sends.append(mazdacan.create_crz_ctrl(self.packer, bus, long_engaged, acc_available, gap, acc_active_2,
-                                                  hbc_request=CS.hbc_request))
+        can_sends.append(mazdacan.create_crz_ctrl(self.packer, bus, long_engaged, acc_available, gap, lead_distance,
+                                                  acc_active_2, hbc_request=CS.hbc_request))
       self.long_counter += 1
 
     return can_sends
