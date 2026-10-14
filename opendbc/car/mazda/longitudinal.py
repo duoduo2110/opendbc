@@ -15,9 +15,12 @@ RESUME_UNLATCH_LATCHED_FRAMES = int(0.18 / DT_CTRL)
 RESUME_REPULSE_FRAMES = int(1.0 / DT_CTRL)
 # Debounce movement requests before releasing a standstill hold.
 RELEASE_DEBOUNCE_FRAMES = int(0.2 / DT_CTRL)
-# A plan must ask for more than this to open a hold: the e2e model drifts up to +0.19 at a stop
-# before its shouldStop lands, and every logged drive-off passes 0.25 within 1.1 s.
+# Arriving at a stop, the e2e plan drifts up to +0.11 for up to 0.4 s before its shouldStop lands,
+# always starting within 0.2 s of standstill. Inside this window a hold opens only above
+# RELEASE_ACCEL; after it, any sustained positive plan is a request to move: a gentle drive-off
+# behind a creeping lead can peak at +0.11 (routes 4a3fe2b0e8aec968/0000006e, 00000100 t+613).
 RELEASE_ACCEL = 0.25  # m/s^2
+RELEASE_SETTLE_FRAMES = int(1.0 / DT_CTRL)
 # The still-stopped breakaway ramp gives up after this.
 BREAKAWAY_FRAMES = int(3.0 / DT_CTRL)
 
@@ -41,6 +44,7 @@ class StandstillHold:
     self.just_released = False
     self.latched_frames = 0  # frames waiting for the body ECU to release its hold
     self.repulsed = False
+    self.standstill_frames = 0
 
   def update(self, long_engaged: bool, stopping: bool, standstill: bool,
              plan_accel: float, body_hold: bool, gas_pressed: bool) -> None:
@@ -50,9 +54,11 @@ class StandstillHold:
       return
 
     was_holding = self.holding
-    # Debounce plan movement requests: opening a hold takes RELEASE_ACCEL, keeping it open any
-    # positive plan. Driver throttle releases the hold immediately.
-    release_accel = RELEASE_ACCEL if was_holding else 0.
+    self.standstill_frames = self.standstill_frames + 1 if standstill else 0
+    # Debounce plan movement requests: opening a hold just after arriving takes RELEASE_ACCEL,
+    # otherwise any positive plan. Driver throttle releases the hold immediately.
+    settling = self.standstill_frames <= RELEASE_SETTLE_FRAMES
+    release_accel = RELEASE_ACCEL if was_holding and settling else 0.
     self.release_frames = self.release_frames + 1 if plan_accel > release_accel else 0
     plan_wants_go = self.release_frames >= RELEASE_DEBOUNCE_FRAMES
     # Keep STOPPING off once the plan or driver requests acceleration.
