@@ -49,7 +49,7 @@ def create_acc_command(packer, bus, counter, accel, *, long_active, acc_availabl
   return packer.make_can_msg("CRZ_INFO", bus, values)
 
 
-def create_crz_ctrl(packer, bus, long_active, acc_available, gap_setting, lead_distance, acc_active_2, *,
+def create_crz_ctrl(packer, bus, long_active, acc_available, gap_setting, acc_active_2, *, lead_distance=0,
                     hbc_request=False):
   # CRZ_CTRL replaces radar cruise state and mirrors the driver's gap selection. The cluster draws
   # the lead from RADAR_HAS_LEAD; RADAR_LEAD_RELATIVE_DISTANCE is stock's 1 to 5 closeness bucket.

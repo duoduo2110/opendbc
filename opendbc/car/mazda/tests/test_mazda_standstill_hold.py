@@ -128,7 +128,7 @@ def test_gentle_drive_off_after_settling_opens_the_hold(body_hold):
   # route 4a3fe2b0e8aec968/0000006e t+1394: 35 s into a stop the lead pulls away at +1 m/s and the
   # plan asks +0.17 for 0.44 s. Under a 0.25 threshold the hold never opened and the driver used gas
   drive(sm, 1, stopping=True)
-  drive(sm, int(35.0 / DT_CTRL), stopping=True, standstill=True, body_hold=body_hold)
+  drive(sm, RELEASE_SETTLE_FRAMES + 1, stopping=True, standstill=True, body_hold=body_hold)
   drive(sm, RELEASE_DEBOUNCE_FRAMES, standstill=True, body_hold=body_hold, plan_accel=0.17)
   assert not sm.holding and sm.just_released
   assert sm.resume_unlatching == body_hold

@@ -123,7 +123,8 @@ def test_crz_info_accel_encoding_and_checksum(packer, stopping, unlatching):
   (True, True, 1, 2, True, "0a01874000001000"),     # wire gap 1 (4 bars on the cluster)
 ])
 def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, lead_distance, acc_active_2, expected):
-  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, lead_distance, acc_active_2)[1]
+  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2,
+                                 lead_distance=lead_distance)[1]
   assert dat.hex() == expected
 
 
@@ -133,9 +134,9 @@ def test_crz_ctrl_golden_bytes(packer, long_active, acc_available, gap, lead_dis
   (True, True, 2, True, "0a210b0000001000"),     # engaged
 ])
 def test_crz_ctrl_relays_hbc_arming(packer, long_active, acc_available, gap, acc_active_2, expected):
-  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, 0, acc_active_2, hbc_request=True)[1]
+  dat = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2, hbc_request=True)[1]
   assert dat.hex() == expected
-  bare = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, 0, acc_active_2)[1]
+  bare = mazdacan.create_crz_ctrl(packer, 0, long_active, acc_available, gap, acc_active_2)[1]
   assert bytes(a ^ b for a, b in zip(dat, bare, strict=True)) == bytes([0, 0x20, 0, 0, 0, 0, 0, 0])
 
 

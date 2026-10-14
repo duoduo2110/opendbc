@@ -16,11 +16,12 @@ RESUME_REPULSE_FRAMES = int(1.0 / DT_CTRL)
 # Debounce movement requests before releasing a standstill hold.
 RELEASE_DEBOUNCE_FRAMES = int(0.2 / DT_CTRL)
 # Arriving at a stop, the e2e plan drifts up to +0.11 for up to 0.4 s before its shouldStop lands,
-# always starting within 0.2 s of standstill. Inside this window a hold opens only above
-# RELEASE_ACCEL; after it, any sustained positive plan is a request to move: a gentle drive-off
-# behind a creeping lead can peak at +0.11 (routes 4a3fe2b0e8aec968/0000006e, 00000100 t+613).
-RELEASE_ACCEL = 0.25  # m/s^2
+# always starting within 0.2 s of standstill. For RELEASE_SETTLE_FRAMES of standstill a hold opens
+# only above RELEASE_ACCEL; after that any sustained positive plan is a request to move, since a
+# gentle drive-off behind a creeping lead can peak at +0.11 (routes 4a3fe2b0e8aec968/0000006e,
+# 00000100 t+613). Keying this off longControlState instead releases on three arrival blips.
 RELEASE_SETTLE_FRAMES = int(1.0 / DT_CTRL)
+RELEASE_ACCEL = 0.25  # m/s^2
 # The still-stopped breakaway ramp gives up after this.
 BREAKAWAY_FRAMES = int(3.0 / DT_CTRL)
 

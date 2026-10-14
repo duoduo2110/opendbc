@@ -90,19 +90,18 @@ def test_gap_setting_mirrors_driver(cc, cs, bars, wire):
   assert parse_frame(CRZ_CTRL, frame(sends, CRZ_CTRL))["DISTANCE_SETTING"] == wire
 
 
-@pytest.mark.parametrize("lead_visible, kwargs, lead", [
-  (True, dict(accel=0.5), (1, 2)),
-  (True, dict(long_state=STOPPING, accel=-1.024, standstill=True), (1, 3)),
-  (True, dict(enabled=False, long_active=False, accel=0., long_state=OFF), (1, 2)),
-  (False, dict(accel=0.5), (0, 0)),
-  (False, dict(long_state=STOPPING, accel=-1.024, standstill=True), (0, 0)),
-], ids=["following", "stopped_behind", "disengaged", "no_lead", "hold_no_lead"])
-def test_lead_shows_on_the_dash_but_not_in_the_tracks(cc, cs, lead_visible, kwargs, lead):
+@pytest.mark.parametrize("lead_visible", [True, False])
+@pytest.mark.parametrize("kwargs, bucket", [
+  (dict(accel=0.5), 2),
+  (dict(long_state=STOPPING, accel=-1.024, standstill=True), 3),
+  (dict(enabled=False, long_active=False, accel=0., long_state=OFF), 2),
+], ids=["following", "stopped", "disengaged"])
+def test_lead_shows_on_the_dash_but_not_in_the_tracks(cc, cs, kwargs, bucket, lead_visible):
   # CRZ_CTRL carries the vision lead for the cluster; the tracks stay the stock empty capture.
   cc.frame = 0  # force emission
   sends = step_long(cc, cs, lead_visible=lead_visible, **kwargs)
   for bus in (0, 2):
-    assert crz_ctrl_lead(frame(sends, CRZ_CTRL, bus)) == lead
+    assert crz_ctrl_lead(frame(sends, CRZ_CTRL, bus)) == ((1, bucket) if lead_visible else (0, 0))
     for addr, capture in mazdacan.RADAR_TRACK_MSGS.items():
       assert frame(sends, addr, bus)[:7] == capture[:7], f"{addr:#x} left the empty capture"
 
