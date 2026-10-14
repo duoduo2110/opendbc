@@ -7,7 +7,7 @@ from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.longitudinal import AccelShaper, StandstillHold
+from opendbc.car.mazda.longitudinal import AccelShaper, LeadIcon, StandstillHold
 from opendbc.car.mazda.radar_session import RadarSessionManager, RadarSessionState
 from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
 
@@ -77,6 +77,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.radar_session = RadarSessionManager()
     self.accel_shaper = AccelShaper()
     self.accel_last = 0.
+    self.lead_icon = LeadIcon()
     self.dash_steer_warning = DashSteerWarning()
     self.dash_warning_on_bus = False
 
@@ -237,6 +238,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     accel = self.accel_shaper.update(long_active, CC.actuators.accel, self.accel_last, sm, CS.out.standstill,
                                      CS.body_hold, CS.out.vEgoRaw)
     self.accel_last = accel
+    lead_shown = self.lead_icon.update(CC.hudControl.leadVisible)
 
     if radar_master and self.frame % CarControllerParams.RADAR_STEP == 0:
       for bus in LONG_BUSES:
@@ -257,7 +259,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       acc_active_2 = sm.acc_active_2 if long_engaged else False
       # Show the vision lead on the dash with stock's distance bucket: 3 behind a stopped lead,
       # 2 while following. The tracks stay empty.
-      lead_distance = (3 if CS.out.standstill else 2) if CC.hudControl.leadVisible else 0
+      lead_distance = (3 if CS.out.standstill else 2) if lead_shown else 0
       for bus in LONG_BUSES:
         can_sends.append(mazdacan.create_acc_command(self.packer, bus, self.long_counter, accel,
                                                      long_active=long_engaged, acc_available=acc_available,

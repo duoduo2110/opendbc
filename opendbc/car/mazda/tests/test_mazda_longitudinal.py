@@ -12,7 +12,7 @@ import pytest
 
 from opendbc.car import DT_CTRL
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, RELEASE_DEBOUNCE_FRAMES, RESUME_REPULSE_FRAMES,
+from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, LEAD_HIDE_FRAMES, LEAD_SHOW_FRAMES, LeadIcon, RELEASE_DEBOUNCE_FRAMES, RESUME_REPULSE_FRAMES,
                                             RESUME_UNLATCH_LATCHED_FRAMES)
 from opendbc.car.mazda.tests.conftest import (CRZ_CTRL, CRZ_INFO, RADAR_STATIC, RADAR_UDS, LongCtrlState, accel_cmd_raw,
                                               crz_ctrl_lead, crz_info, frame, parse_frame, step_long)
@@ -98,12 +98,27 @@ def test_gap_setting_mirrors_driver(cc, cs, bars, wire):
 ], ids=["following", "stopped", "disengaged"])
 def test_lead_shows_on_the_dash_but_not_in_the_tracks(cc, cs, kwargs, bucket, lead_visible):
   # CRZ_CTRL carries the vision lead for the cluster; the tracks stay the stock empty capture.
+  for _ in range(LEAD_SHOW_FRAMES):
+    step_long(cc, cs, lead_visible=lead_visible, **kwargs)
   cc.frame = 0  # force emission
   sends = step_long(cc, cs, lead_visible=lead_visible, **kwargs)
   for bus in (0, 2):
     assert crz_ctrl_lead(frame(sends, CRZ_CTRL, bus)) == ((1, bucket) if lead_visible else (0, 0))
     for addr, capture in mazdacan.RADAR_TRACK_MSGS.items():
       assert frame(sends, addr, bus)[:7] == capture[:7], f"{addr:#x} left the empty capture"
+
+
+def test_lead_icon_rides_out_flicker():
+  icon = LeadIcon()
+  # a marginal lead flickering faster than the show debounce never reaches the dash
+  for i in range(10 * LEAD_SHOW_FRAMES):
+    assert not icon.update((i // (LEAD_SHOW_FRAMES // 2)) % 2 == 0)
+  assert [icon.update(True) for _ in range(LEAD_SHOW_FRAMES)][-1]
+  # dropouts shorter than the hide debounce keep it
+  for _ in range(5):
+    assert all(icon.update(False) for _ in range(LEAD_HIDE_FRAMES - 1))
+    icon.update(True)
+  assert not [icon.update(False) for _ in range(LEAD_HIDE_FRAMES)][-1]
 
 
 def test_stop_emits_hold_then_relaxes(cc, cs):
