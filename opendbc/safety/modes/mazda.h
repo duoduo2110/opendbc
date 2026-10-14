@@ -93,14 +93,6 @@ static bool mazda_radar_capture_msg_valid(const CANPacket_t *msg) {
   return valid;
 }
 
-static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
-  // Permit only the distance and relative-velocity fields in the occupied-track template.
-  return (msg->addr == MAZDA_RADAR_TRACK_4) &&
-         ((msg->data[1] & 0x0fU) == 0x00U) && (msg->data[2] == 0x00U) &&
-         ((msg->data[4] & 0x1fU) == 0x1cU) && (msg->data[5] == 0x00U) &&
-         (msg->data[6] == 0x00U) && ((msg->data[7] & 0xf0U) == 0x00U);
-}
-
 // track msgs coming from OP so that we know what CAM msgs to drop and what to forward
 static void mazda_rx_hook(const CANPacket_t *msg) {
   if ((int)msg->bus == MAZDA_MAIN) {
@@ -286,12 +278,15 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     if (!controls_allowed && cruise_active) {
       tx = false;
     }
+    // No lead is advertised: RADAR_HAS_LEAD and RADAR_LEAD_RELATIVE_DISTANCE stay 0 like the empty tracks.
+    if (((msg->data[2] & 0x80U) != 0U) || ((msg->data[3] & 0xe0U) != 0U)) {
+      tx = false;
+    }
   }
 
   bool radar_frame = (msg->addr == MAZDA_RADAR_STATIC) || ((msg->addr >= MAZDA_RADAR_TRACK_1) && (msg->addr <= MAZDA_RADAR_TRACK_6));
   if (mazda_longitudinal && long_replacement_bus && radar_frame) {
-    // Occupied tracks represent perception and remain valid while controls are disengaged.
-    if (!mazda_radar_capture_msg_valid(msg) && !mazda_synthetic_lead_radar_track_msg_valid(msg)) {
+    if (!mazda_radar_capture_msg_valid(msg)) {
       tx = false;
     }
   }

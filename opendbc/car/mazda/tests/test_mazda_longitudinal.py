@@ -11,10 +11,11 @@ RESUME_UNLATCHING pulse, the breakaway ramp, the gas override and the disengaged
 import pytest
 
 from opendbc.car import DT_CTRL
+from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, RELEASE_DEBOUNCE_FRAMES, RESUME_REPULSE_FRAMES,
                                             RESUME_UNLATCH_LATCHED_FRAMES)
 from opendbc.car.mazda.tests.conftest import (CRZ_CTRL, CRZ_INFO, RADAR_STATIC, RADAR_UDS, LongCtrlState, accel_cmd_raw,
-                                              crz_info, frame, parse_frame, step_long)
+                                              crz_ctrl_lead, crz_info, frame, parse_frame, step_long)
 from opendbc.car.mazda.values import CarControllerParams
 
 STOPPING = LongCtrlState.stopping
@@ -87,6 +88,21 @@ def test_gap_setting_mirrors_driver(cc, cs, bars, wire):
   cc.frame = 0  # force emission on the first step
   sends = step_long(cc, cs, gap=bars)
   assert parse_frame(CRZ_CTRL, frame(sends, CRZ_CTRL))["DISTANCE_SETTING"] == wire
+
+
+@pytest.mark.parametrize("kwargs", [
+  dict(accel=0.5),
+  dict(long_state=STOPPING, accel=-1.024, standstill=True),
+  dict(enabled=False, long_active=False, accel=0., long_state=OFF),
+], ids=["following", "holding", "disengaged"])
+def test_vision_lead_never_reaches_the_bus(cc, cs, kwargs):
+  # The tracks stay the stock empty capture and CRZ_CTRL's lead fields stay 0 whatever vision sees.
+  cc.frame = 0  # force emission
+  sends = step_long(cc, cs, lead_visible=True, lead_d_rel=4.0, lead_v_rel=-1.0, **kwargs)
+  for bus in (0, 2):
+    assert crz_ctrl_lead(frame(sends, CRZ_CTRL, bus)) == (0, 0)
+    for addr, capture in mazdacan.RADAR_TRACK_MSGS.items():
+      assert frame(sends, addr, bus)[:7] == capture[:7], f"{addr:#x} left the empty capture"
 
 
 def test_stop_emits_hold_then_relaxes(cc, cs):

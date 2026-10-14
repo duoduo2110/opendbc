@@ -7,24 +7,12 @@ See the LICENSE.md file in the root directory for more details.
 import numpy as np
 
 from opendbc.car import DT_CTRL, rate_limit
-from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.values import CarControllerParams
 
 # Stock body-latched releases use a RESUME_UNLATCHING pulse of 9 wire frames, the latched-family mode.
 RESUME_UNLATCH_LATCHED_FRAMES = int(0.18 / DT_CTRL)
 # Retry one unanswered body-latched release after this, the body still holding, then return control to the plan.
 RESUME_REPULSE_FRAMES = int(1.0 / DT_CTRL)
-# Debounce lead visibility before advertising a radar track.
-LEAD_DEBOUNCE_FRAMES = int(0.5 / DT_CTRL)
-# Stock's within-track range steps stay under 0.28 m per 100 ms 99% of the time; a vision lead
-# wanders by metres. The track follows the measurement with a ~0.5 s time constant.
-LEAD_TRACK_GAIN = 0.02
-# A measurement this far off the track is another object (a lane change, a cut-in).
-LEAD_GATE_MIN = 5.0  # m
-LEAD_GATE_FRACTION = 0.15
-LEAD_SWITCH_FRAMES = int(0.1 / DT_CTRL)
-# Stock empties a slot before a new object takes it: gap median 0.4 s, p10 0.1 s.
-LEAD_REACQUIRE_FRAMES = int(0.3 / DT_CTRL)
 # Debounce movement requests before releasing a standstill hold.
 RELEASE_DEBOUNCE_FRAMES = int(0.2 / DT_CTRL)
 # A plan must ask for more than this to open a hold: the e2e model drifts up to +0.19 at a stop
@@ -177,74 +165,3 @@ class AccelShaper:
         accel = min(max(accel, CarControllerParams.ACCEL_HOLD_LATCHED),
                     CarControllerParams.ACCEL_RESUME_PULSE_MAX)
     return accel
-
-
-class AdvertisedLead:
-  """Maintain consistent lead state across CRZ_CTRL and the 0x364 track.
-
-  Advertisement follows perception rather than engagement. Visibility is debounced and the
-  vision lead is tracked the way a radar reports it: range moves smoothly, is propagated
-  through short vision gaps, and a different object empties the slot before taking it.
-  """
-
-  def __init__(self):
-    self.visible = False
-    self.flip_frames = 0
-    self.holding = False
-    self.lead = None
-    self._track = None
-    self.switch_frames = 0
-    self.reacquire_frames = 0
-
-  def update(self, lead_visible: bool, d_rel: float, v_rel: float, holding: bool) -> None:
-    if lead_visible != self.visible:
-      self.flip_frames += 1
-      if self.flip_frames >= LEAD_DEBOUNCE_FRAMES:
-        self.visible = lead_visible
-        self.flip_frames = 0
-    else:
-      self.flip_frames = 0
-
-    measured = 0. < d_rel <= mazdacan.DIST_OBJ_MAX
-    if self._track is None:
-      if self.reacquire_frames > 0:
-        self.reacquire_frames -= 1
-      elif measured:
-        self._track = (d_rel, v_rel)
-    else:
-      d, v = self._track
-      d += v * DT_CTRL
-      if measured and abs(d_rel - d) > max(LEAD_GATE_MIN, LEAD_GATE_FRACTION * d):
-        self.switch_frames += 1
-        if self.switch_frames < LEAD_SWITCH_FRAMES:
-          self._track = (d, v)
-        elif holding:
-          # A held stop keeps its lead on the bus; re-seat the slot directly, as stock sometimes does.
-          self._track = (d_rel, v_rel)
-        else:
-          self._track = None
-          self.reacquire_frames = LEAD_REACQUIRE_FRAMES
-      elif measured:
-        self.switch_frames = 0
-        self._track = (d + LEAD_TRACK_GAIN * (d_rel - d), v + LEAD_TRACK_GAIN * (v_rel - v))
-      elif self.visible:
-        # Propagate range through the gap instead of repeating a frozen track.
-        self._track = (d, v)
-      else:
-        # Expire stale state after the debounce window.
-        self._track = None
-    if self._track is None:
-      self.switch_frames = 0
-    self.lead = self._track if self.visible else None
-    self.holding = holding
-
-  @property
-  def has_lead(self) -> bool:
-    return self.lead is not None
-
-  @property
-  def ctrl_phase(self) -> int:
-    # Use stock's relative-distance buckets and keep all lead fields consistent.
-    if not self.has_lead:
-      return 0
-    return 3 if self.holding else 2

@@ -213,8 +213,8 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
     values = {"ACCEL_CMD": accel, "ACC_ACTIVE": active}
     return self.packer.make_can_msg_safety("CRZ_INFO", bus, values)
 
-  def _crz_ctrl_cmd_msg(self, active: bool, bus: int = 0):
-    values = {"CRZ_ACTIVE": active}
+  def _crz_ctrl_cmd_msg(self, active: bool, bus: int = 0, **values):
+    values["CRZ_ACTIVE"] = active
     return self.packer.make_can_msg_safety("CRZ_CTRL", bus, values)
 
   def _press_set(self):
@@ -340,40 +340,6 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
     for bus in (0, 2):
       self.assertFalse(self._tx(common.make_msg(bus, 0x499, 8, bytes.fromhex("0098400100000000"))))
 
-  def test_synthetic_lead_radar_track_allowed_disengaged(self):
-    # Permit the measurement fields while requiring the occupied-track template. The slot is
-    # perception, not actuation, so it remains valid with controls_allowed low like stock radar
-    # reports objects with cruise off.
-    lead_frames = [
-      "0a4000001c000000",  # stopped lead at 10.25 m
-      "229000007c00000e",  # lead at 34.56 m, closing slowly
-      "22d000ff7c000004",  # lead at 34.81 m, opening slowly
-      "000000001c000000",  # zero range, zero relv corner (the template itself)
-      "fff000fffc00000f",  # max range, max relv corner
-    ]
-    for bus in (0, 2):
-      for hexdat in lead_frames:
-        dat = bytes.fromhex(hexdat)
-        for controls_allowed in (False, True):
-          self.safety.set_controls_allowed(controls_allowed)
-          self.assertTrue(self._tx(common.make_msg(bus, 0x364, 8, dat)))
-
-  def test_malformed_lead_radar_track_blocked(self):
-    # each corrupts one template-owned field of a valid lead frame
-    bad_frames = [
-      "229100007c00000e",  # data[1] low nibble off the template
-      "229e00007c00000e",  # the retired capture's -8 deg angle
-      "229001007c00000e",  # data[2] not zero
-      "229000007d00000e",  # data[4] template bits wrong
-      "229000007cc0000e",  # data[5] wrong -- the retired capture's empty-slot signature
-      "229000007c00010e",  # data[6] not zero
-      "229000007c00100e",  # data[7] high nibble not zero
-    ]
-    self.safety.set_controls_allowed(True)
-    for bus in (0, 2):
-      for hexdat in bad_frames:
-        self.assertFalse(self._tx(common.make_msg(bus, 0x364, 8, bytes.fromhex(hexdat))))
-
   def test_unexpected_radar_tracks_blocked(self):
     bad_messages = {
       0x499: bytes.fromhex("0008c00100000000"),
@@ -389,6 +355,18 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
     for bus in (0, 2):
       for addr, dat in bad_messages.items():
         self.assertFalse(self._tx(common.make_msg(bus, addr, 8, dat)))
+
+    # no lead is advertised, so an occupied track is never ours, engaged or not
+    occupied = [
+      "0a4000001c000000",  # stopped lead at 10.25 m, the retired straight-ahead template
+      "229e00007c00000e",  # lead at 34.56 m at the retired capture's -8 deg angle
+    ]
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      for bus in (0, 2):
+        for addr in range(0x361, 0x367):
+          for hexdat in occupied:
+            self.assertFalse(self._tx(common.make_msg(bus, addr, 8, bytes.fromhex(hexdat))))
 
   def test_radar_uds_allowlist(self):
     # tester present and session control only, main bus only
@@ -406,6 +384,14 @@ class TestMazdaLongitudinalSafety(TestMazdaEpsSafety, common.LongitudinalAccelSa
 
       self.safety.set_controls_allowed(True)
       self.assertTrue(self._tx(self._crz_ctrl_cmd_msg(True, bus)))
+
+  def test_crz_ctrl_lead_blocked(self):
+    # RADAR_HAS_LEAD and the lead phase stay 0, matching the empty tracks
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      for bus in (0, 2):
+        for values in ({"RADAR_HAS_LEAD": 1}, {"RADAR_LEAD_RELATIVE_DISTANCE": 2}, {"RADAR_LEAD_RELATIVE_DISTANCE": 4}):
+          self.assertFalse(self._tx(self._crz_ctrl_cmd_msg(False, bus, **values)))
 
   def _pedals_msg(self, armed, brake=0):
     # PEDALS with MRCC armed-but-idle (ACC_OFF), the state that persists across ignition

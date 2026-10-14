@@ -7,7 +7,7 @@ from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.longitudinal import AccelShaper, AdvertisedLead, StandstillHold
+from opendbc.car.mazda.longitudinal import AccelShaper, StandstillHold
 from opendbc.car.mazda.radar_session import RadarSessionManager, RadarSessionState
 from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags
 
@@ -72,7 +72,6 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.cancel_counter = 0
     self.stop_and_go = StandstillHold()
-    self.lead_adv = AdvertisedLead()
     self.long_counter = 0
     self.radar_counter = 0
     self.radar_session = RadarSessionManager()
@@ -234,9 +233,6 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     sm = self.stop_and_go
     sm.update(long_engaged, stopping, CS.out.standstill, CC.actuators.accel, CS.body_hold,
               gas_pressed=CS.out.gasPressed)
-    # Lead advertisement represents perception and is independent of engagement.
-    self.lead_adv.update(CC.hudControl.leadVisible, CC_SP.leadOne.dRel,
-                         CC_SP.leadOne.vRel, sm.holding)
 
     accel = self.accel_shaper.update(long_active, CC.actuators.accel, self.accel_last, sm, CS.out.standstill,
                                      CS.body_hold, CS.out.vEgoRaw)
@@ -244,7 +240,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     if radar_master and self.frame % CarControllerParams.RADAR_STEP == 0:
       for bus in LONG_BUSES:
-        can_sends.extend(mazdacan.create_radar_frames(bus, self.radar_counter, self.lead_adv.lead, g46l=self.g46l))
+        can_sends.extend(mazdacan.create_radar_frames(bus, self.radar_counter, g46l=self.g46l))
       self.radar_counter += 1
 
     if radar_master and self.frame % CarControllerParams.LONG_STEP == 0:
@@ -264,9 +260,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
                                                      long_active=long_engaged, acc_available=acc_available,
                                                      brake_pressed=CS.out.brakePressed,
                                                      stopping=sm.stop_bits, resume_unlatching=sm.resume_unlatching))
-        can_sends.append(mazdacan.create_crz_ctrl(self.packer, bus, long_engaged, acc_available, gap,
-                                                  self.lead_adv.has_lead, self.lead_adv.ctrl_phase,
-                                                  acc_active_2, hbc_request=CS.hbc_request))
+        can_sends.append(mazdacan.create_crz_ctrl(self.packer, bus, long_engaged, acc_available, gap, acc_active_2,
+                                                  hbc_request=CS.hbc_request))
       self.long_counter += 1
 
     return can_sends
