@@ -11,7 +11,7 @@ import pytest
 
 from opendbc.car import DT_CTRL
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.longitudinal import LEAD_DEBOUNCE_FRAMES, AdvertisedLead
+from opendbc.car.mazda.longitudinal import LEAD_DEBOUNCE_FRAMES, LEAD_REACQUIRE_FRAMES, LEAD_SWITCH_FRAMES, AdvertisedLead
 from opendbc.car.mazda.tests.conftest import (CRZ_CTRL, LEAD_TRACK, LongCtrlState, crz_ctrl_lead, frame, frames, lead_track,
                                               step_long)
 
@@ -57,14 +57,16 @@ class TestAdvertisedLead:
   def test_measurement_is_coasted_across_a_dropout(self):
     al = AdvertisedLead()
     # Coast the last measurement through the debounce window instead of fabricating or freezing a track.
-    drive(al, 2 * LEAD_DEBOUNCE_FRAMES, d_rel=120.0, v_rel=0.5)
-    assert al.lead == (120.0, 0.5)
+    drive(al, 2 * LEAD_DEBOUNCE_FRAMES, d_rel=120.0, v_rel=0.)
+    assert al.lead == (120.0, 0.)
+    drive(al, 1, d_rel=120.0, v_rel=0.5)
+    d0, v0 = al.lead
     coast_frames = LEAD_DEBOUNCE_FRAMES - 1
     drive(al, coast_frames, lead_visible=False, d_rel=0., v_rel=0.)
     assert al.lead is not None, "dropped the measurement inside the debounce window"
     d, v = al.lead
-    assert v == 0.5
-    assert d == pytest.approx(120.0 + 0.5 * coast_frames * DT_CTRL, abs=1e-6), "the coast must propagate the range, not freeze it"
+    assert v == v0 > 0.
+    assert d == pytest.approx(d0 + v0 * coast_frames * DT_CTRL, abs=1e-6), "the coast must propagate the range, not freeze it"
 
   def test_holding_reports_the_stop_phase_only_with_a_lead(self):
     al = AdvertisedLead()
@@ -72,6 +74,44 @@ class TestAdvertisedLead:
     assert al.ctrl_phase == 3
     drive(al, 2 * LEAD_DEBOUNCE_FRAMES, lead_visible=False, d_rel=0., holding=True)
     assert not al.has_lead and al.ctrl_phase == 0
+
+  def test_range_moves_like_a_radar_track(self):
+    al = drive(AdvertisedLead(), 2 * LEAD_DEBOUNCE_FRAMES, d_rel=50.0)
+    # vision wandering +/-3 m at its 20 Hz model rate (route 6d)
+    steps, last = [], al.lead[0]
+    for i in range(400):
+      al.update(True, 50.0 + (3.0 if (i // 5) % 2 else -3.0), 0., False)
+      if i % 10 == 9:
+        steps.append(abs(al.lead[0] - last))
+        last = al.lead[0]
+    assert al.has_lead
+    assert max(steps) < 1.0, f"range stepped {max(steps):.2f} m in 100 ms"
+
+  def test_a_new_object_empties_the_slot_before_taking_it(self):
+    # Route 6d's lane change: the vision lead went 27.7 -> 45.2 m and the camera faulted.
+    al = drive(AdvertisedLead(), 2 * LEAD_DEBOUNCE_FRAMES, d_rel=27.7)
+    advertised = []
+    for _ in range(100):
+      al.update(True, 45.2, 0., False)
+      advertised.append(al.lead)
+    assert all(x is None or abs(x[0] - 27.7) < 1.0 for x in advertised[:LEAD_SWITCH_FRAMES]), "a switch mid-confirmation moved the track"
+    gap = [i for i, x in enumerate(advertised) if x is None]
+    assert len(gap) == LEAD_REACQUIRE_FRAMES + 1 and al.ctrl_phase == 2
+    assert all(x is not None for x in advertised[gap[-1] + 1:])
+    assert advertised[gap[-1] + 1] == (45.2, 0.), "re-acquired somewhere other than the new object"
+
+  def test_one_stray_model_frame_keeps_the_track(self):
+    al = drive(AdvertisedLead(), 2 * LEAD_DEBOUNCE_FRAMES, d_rel=40.0)
+    drive(al, LEAD_SWITCH_FRAMES // 2, d_rel=70.0)
+    drive(al, 1)
+    assert al.has_lead and al.lead[0] == pytest.approx(40.0, abs=0.1)
+
+  def test_a_held_stop_reseats_without_emptying(self):
+    al = drive(AdvertisedLead(), 2 * LEAD_DEBOUNCE_FRAMES, d_rel=4.0, holding=True)
+    for _ in range(3 * LEAD_SWITCH_FRAMES):
+      al.update(True, 12.0, 0., True)
+      assert al.has_lead and al.ctrl_phase == 3
+    assert al.lead == (12.0, 0.)
 
 
 class TestLeadOnTheBus:
@@ -83,7 +123,7 @@ class TestLeadOnTheBus:
       step_long(cc, cs, accel=0.5, lead_visible=True, lead_d_rel=20.0, lead_v_rel=-1.5)
     seen = []
     for i in range(60):
-      sends = step_long(cc, cs, accel=0.5, lead_visible=True, lead_d_rel=20.0 - 0.1 * i, lead_v_rel=-1.5)
+      sends = step_long(cc, cs, accel=0.5, lead_visible=True, lead_d_rel=20.0 - 1.5 * DT_CTRL * i, lead_v_rel=-1.5)
       track = frame(sends, LEAD_TRACK)
       if track is not None:
         seen.append(lead_track(track))

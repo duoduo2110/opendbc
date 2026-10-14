@@ -161,7 +161,7 @@ def test_radar_frames_counter_and_lead_track():
   # counter stamps the low nibble of the last byte on every track
   assert [f.dat[7] & 0x0f for f in frames[1:]] == [15] * 6
   tracks = {f.address: f.dat.hex() for f in frames}
-  assert tracks[0x364] == "0a4e00001c00000f"
+  assert tracks[0x364] == "0a4000001c00000f"
 
 
 def test_g46l_radar_frames_are_the_static_capture_alone():
@@ -177,6 +177,8 @@ def test_lead_track_constant_bytes_match_the_stock_release_capture():
   # Preserve the camera's occupied-slot status bytes.
   assert mazdacan.LEAD_TRACK_TEMPLATE[4] & 0x1f == 0x1c
   assert mazdacan.LEAD_TRACK_TEMPLATE[5] == 0x00
+  # and the object sits straight ahead
+  assert parse_frame(LEAD_TRACK, mazdacan.LEAD_TRACK_TEMPLATE)["ANG_OBJ"] == 0
 
 
 @pytest.mark.parametrize("d_rel, v_rel", [

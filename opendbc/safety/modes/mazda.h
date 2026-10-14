@@ -96,7 +96,7 @@ static bool mazda_radar_capture_msg_valid(const CANPacket_t *msg) {
 static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
   // Permit only the distance and relative-velocity fields in the occupied-track template.
   return (msg->addr == MAZDA_RADAR_TRACK_4) &&
-         ((msg->data[1] & 0x0fU) == 0x0eU) && (msg->data[2] == 0x00U) &&
+         ((msg->data[1] & 0x0fU) == 0x00U) && (msg->data[2] == 0x00U) &&
          ((msg->data[4] & 0x1fU) == 0x1cU) && (msg->data[5] == 0x00U) &&
          (msg->data[6] == 0x00U) && ((msg->data[7] & 0xf0U) == 0x00U);
 }

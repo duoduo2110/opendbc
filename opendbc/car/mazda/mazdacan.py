@@ -14,7 +14,10 @@ RADAR_TRACK_MSGS = {
 }
 LEAD_TRACK_ADDR = 0x364
 # Constant bytes for an occupied 0x364 track. create_lead_track replaces its measurements.
-LEAD_TRACK_TEMPLATE = bytes.fromhex("000e00001c000000")
+# ANG_OBJ is 0: the lead is in our path, and stock's nearest track sits at 0 +/- 1 deg. The
+# release capture this came from read -8 deg, harmless a few metres behind a car at a stop but
+# a lane to the left at highway range.
+LEAD_TRACK_TEMPLATE = bytes.fromhex("000000001c000000")
 DIST_OBJ_SCALE = 0.0625   # m per bit, DIST_OBJ and RELV_OBJ share it
 DIST_OBJ_MAX = 255.875    # m, the full-scale DIST_OBJ reading a track can carry
 
