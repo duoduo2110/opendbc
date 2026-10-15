@@ -273,7 +273,7 @@ class MadsCarState(MadsCarStateBase):
     standby = (not self.CP_SP.flags & MazdaFlagsSP.TJA_BUTTON and self.mads_available and not self.mads_enabled and
                self.mads_feedback_age < MADS_ON_STANDBY_FRAMES and ret.cruiseState.available and self.out.cruiseState.available and
                not self.cruise_enabled and not self.out.cruiseState.enabled and
-               not any(btns[s] for s in ("CAN_OFF", "RES", "SET_P", "SET_M")) and
+               not (self.cancel_button or self.resume_button or self.accel_button or self.decel_button) and
                not (brake_restricted and (ret.brakePressed or ret.regenBraking)))
     self.mads_standby_frames = min(self.mads_standby_frames + 1, MADS_ON_STANDBY_FRAMES) if standby else 0
 

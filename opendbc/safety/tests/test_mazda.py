@@ -490,8 +490,8 @@ class MazdaTjaButtonBase(unittest.TestCase):
   def _crz_ctrl(self, main_on):
     return self.packer.make_can_msg_safety("CRZ_CTRL", 0, {"CRZ_AVAILABLE": main_on})
 
-  def _pedals(self, acc_off):
-    return self.packer.make_can_msg_safety("PEDALS", 0, {"ACC_OFF": acc_off})
+  def _pedals(self, acc_off, brake=False):
+    return self.packer.make_can_msg_safety("PEDALS", 0, {"ACC_OFF": acc_off, "BRAKE_ON": brake})
 
 
 class TestMazdaTjaMads(MazdaTjaButtonBase):
@@ -574,9 +574,12 @@ class TestMazdaMainOnMads(MazdaTjaButtonBase):
   def _btns(self, on=False, off=False, bus=0):
     return self.packer.make_can_msg_safety("CRZ_BTNS", bus, {"MODE_Y": on, "MODE_X": off})
 
+  def _main(self, on, longitudinal):
+    return self._pedals(on) if longitudinal else self._crz_ctrl(on)
+
   def _standby(self, longitudinal=False, tja=False):
     self._init(tja_button=tja, param=MazdaSafetyFlags.LONG if longitudinal else 0)
-    self.safety.safety_rx_hook(self._pedals(True) if longitudinal else self._crz_ctrl(True))
+    self.safety.safety_rx_hook(self._main(True, longitudinal))
     self.safety.safety_rx_hook(self._btns())
     # The boot-time main edge expires before selfdrived sends an engaged heartbeat.
     self._expire_lateral()
@@ -596,10 +599,8 @@ class TestMazdaMainOnMads(MazdaTjaButtonBase):
         self.assertFalse(self.safety.get_controls_allowed())
         self.assertTrue(self.safety.get_acc_main_on())
         self.safety.safety_rx_hook(self._btns())
-        self.safety.safety_rx_hook(self._pedals(False) if longitudinal else self._crz_ctrl(False))
-        if longitudinal:
-          for _ in range(9):
-            self.safety.safety_rx_hook(self._pedals(False))
+        for _ in range(DEBOUNCE if longitudinal else 1):
+          self.safety.safety_rx_hook(self._main(False, longitudinal))
         self.assertFalse(self.safety.get_controls_allowed_lateral())
 
   def test_held_on_does_not_rearm_after_heartbeat_exit(self):
@@ -636,11 +637,11 @@ class TestMazdaMainOnMads(MazdaTjaButtonBase):
     self._standby()
     self.safety.set_mads_params(True, False, True)
     self.safety.safety_rx_hook(self._crz_ctrl(True))
-    self.safety.safety_rx_hook(self.packer.make_can_msg_safety("PEDALS", 0, {"BRAKE_ON": True}))
+    self.safety.safety_rx_hook(self._pedals(False, brake=True))
     self.safety.safety_rx_hook(self._btns(on=True))
     self.assertFalse(self.safety.get_controls_allowed_lateral())
     self.assertTrue(self.safety.get_controls_requested_lateral())
-    self.safety.safety_rx_hook(self.packer.make_can_msg_safety("PEDALS", 0, {"BRAKE_ON": False}))
+    self.safety.safety_rx_hook(self._pedals(False))
     self.assertTrue(self.safety.get_controls_allowed_lateral())
 
 
