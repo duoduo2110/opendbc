@@ -82,6 +82,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     self.cancel_button = 0
     self.resume_button = 0
     self.main_button = 0
+    self.main_on_button = 0
 
     # The car's own cruise state in either mode; the published one adds the radar guard.
     self.cruise_available = False
@@ -373,6 +374,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     prev_cancel_button = self.cancel_button
     prev_resume_button = self.resume_button
     prev_main_button = self.main_button
+    prev_main_on_button = self.main_on_button
     self.distance_button = btns["DISTANCE_LESS"]
     self.distance_more_button = btns["DISTANCE_MORE"]
     # SET_P is the wheel's increase button; RES is a distinct resume button.
@@ -383,6 +385,8 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     self.resume_button = btns["RES"]
     # The MRCC main button sets MODE_X, MODE_Y or both (main-on and the KE's main-off).
     self.main_button = int(btns["MODE_X"] == 1 or btns["MODE_Y"] == 1)
+    # MODE_Y carries ON intent; MODE_X alone is the KE's OFF button.
+    self.main_on_button = btns["MODE_Y"]
     MadsCarState.update_mads(self, ret, can_parsers)
 
     ret.buttonEvents = [
@@ -392,6 +396,7 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
       *create_button_events(self.cancel_button, prev_cancel_button, {1: ButtonType.cancel}),
       *create_button_events(self.resume_button, prev_resume_button, {1: ButtonType.resumeCruise}),
       *create_button_events(self.main_button, prev_main_button, {1: ButtonType.mainCruise}),
+      *create_button_events(self.main_on_button, prev_main_on_button, {1: ButtonType.mainCruiseOn}),
       # A held press of this button must freeze ICBM through the cruise button timers in the openpilot tree.
       *create_button_events(self.mrcc_button, self.prev_mrcc_button, {1: ButtonType.mainCruise}),
       *create_button_events(self.tja_button, self.prev_tja_button, {1: ButtonType.lkas}),

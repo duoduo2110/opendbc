@@ -748,7 +748,13 @@ class TestTjaButtonEvents:
     CI, pk = car_interface(alpha_long=False), packer()
     self._btns(CI, pk, 0, MODE_X=0, MODE_Y=0)
     ret = self._btns(CI, pk, 1, MODE_X=mode_x, MODE_Y=mode_y)
-    assert [be.type for be in ret.buttonEvents] == [self.ButtonType.mainCruise]
+    expected = [self.ButtonType.mainCruise]
+    if mode_y:
+      expected.append(self.ButtonType.mainCruiseOn)
+    assert [(be.type, be.pressed) for be in ret.buttonEvents] == [(button, True) for button in expected]
+    assert not self._btns(CI, pk, 2, MODE_X=mode_x, MODE_Y=mode_y).buttonEvents
+    ret = self._btns(CI, pk, 3, MODE_X=0, MODE_Y=0)
+    assert [(be.type, be.pressed) for be in ret.buttonEvents] == [(button, False) for button in expected]
 
 
 class TestFirstEngageHold:

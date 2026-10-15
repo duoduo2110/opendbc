@@ -119,9 +119,12 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
       }
     }
 
-    if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_tja_button) {
-      // The physical TJA button is the MADS lateral switch, so lateral no longer follows MRCC.
-      mads_button_press = GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
+    if (msg->addr == MAZDA_CRZ_BTNS) {
+      // With main already on at boot, its edge may expire before selfdrived is ready.
+      // MODE_Y is an explicit ON request, never the KE's MODE_X-only OFF press.
+      // TJA-declared cars keep their independent lateral switch.
+      bool lateral_button = mazda_tja_button ? GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) : (acc_main_on && GET_BIT(msg, 13U));
+      mads_button_press = lateral_button ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
     }
 
     if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_longitudinal) {
