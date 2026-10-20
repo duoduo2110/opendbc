@@ -4,96 +4,46 @@ Copyright (c) 2026-, Zeph Leggett.
 This file is part of zoompilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-from enum import StrEnum
+import numpy as np
 
-from opendbc.car import DT_CTRL, uds
-from opendbc.car.carlog import carlog
-from opendbc.car.can_definitions import CanData
-from opendbc.car.mazda import mazdacan
+from opendbc.car import DT_CTRL, rate_limit
 from opendbc.car.mazda.values import CarControllerParams
 
-RADAR_ADDR = 0x764
-RADAR_BUS = 0
+# Stock body-latched releases use a RESUME_UNLATCHING pulse of 9 wire frames, the latched-family mode.
+RESUME_UNLATCH_LATCHED_FRAMES = int(0.18 / DT_CTRL)
+# Retry one unanswered body-latched release after this, the body still holding, then return control to the plan.
+RESUME_REPULSE_FRAMES = int(1.0 / DT_CTRL)
+# Debounce movement requests before releasing a standstill hold.
+RELEASE_DEBOUNCE_FRAMES = int(0.2 / DT_CTRL)
+# Arriving at a stop, the e2e plan drifts up to +0.11 for up to 0.4 s before its shouldStop lands,
+# always starting within 0.2 s of standstill. For RELEASE_SETTLE_FRAMES of standstill a hold opens
+# only above RELEASE_ACCEL; after that any sustained positive plan is a request to move, since a
+# gentle drive-off behind a creeping lead can peak at +0.11 (routes 4a3fe2b0e8aec968/0000006e,
+# 00000100 t+613). Keying this off longControlState instead releases on three arrival blips.
+RELEASE_SETTLE_FRAMES = int(1.0 / DT_CTRL)
+RELEASE_ACCEL = 0.25  # m/s^2
+# The still-stopped breakaway ramp gives up after this.
+BREAKAWAY_FRAMES = int(3.0 / DT_CTRL)
+# leadVisible toggles 2.3 times a minute while moving, half its runs under 0.6 s, mostly on a
+# marginal lead past 100 m. Showing it after 0.5 s and dropping it after 1.0 s leaves under one
+# change a minute (routes 25e-2c1, 4a3fe2b0e8aec968/0000006e).
+LEAD_SHOW_FRAMES = int(0.5 / DT_CTRL)
+LEAD_HIDE_FRAMES = int(1.0 / DT_CTRL)
 
 
-def create_radar_session_msg(session_type: int) -> CanData:
-  """Build a fire-and-forget UDS DIAGNOSTIC_SESSION_CONTROL frame.
-
-  The radar does not support COMMUNICATION_CONTROL. A programming session disables its
-  periodic traffic and AEB until tester-present traffic stops or the S3 timeout expires.
-  """
-  return CanData(RADAR_ADDR, bytes([0x02, uds.SERVICE_TYPE.DIAGNOSTIC_SESSION_CONTROL, session_type, 0x00, 0x00, 0x00, 0x00, 0x00]), RADAR_BUS)
-
-
-class RadarSessionState(StrEnum):
-  STOCK = "stock"          # radar broadcasting; nothing transmitted
-  SILENCING = "silencing"  # requesting the programming session
-  SILENCED = "silenced"    # radar quiet; tester present + synthetic frames
-  HANDBACK = "handback"    # requesting the default session; synthetic frames continue
-
-
-RADAR_SESSION_LIMIT_FRAMES = int(CarControllerParams.RADAR_SESSION_LIMIT_T / DT_CTRL)
-
-
-class RadarSessionManager:
-  """Move the radar into and out of its UDS programming session.
-
-  Takeover waits for the FSC cold-boot check and begins only while stopped because it disables
-  stock AEB. Refused or unanswered requests leave the stock radar in control for the drive.
-  """
+class LeadIcon:
+  """The dash lead icon: leadVisible once it has held long enough to stop it flickering."""
 
   def __init__(self):
-    self.state = RadarSessionState.STOCK
-    self.state_frames = 0
-    self.silencing_failed = False
-    self.handback_completed = False
+    self.shown = False
+    self.frames = 0
 
-  def update(self, gate_passed: bool, stock_radar_alive: bool, handback: bool,
-             standstill: bool, session_refused: bool, stock_radar_gone: bool) -> RadarSessionState:
-    prev_state = self.state
-    if handback:
-      if self.state == RadarSessionState.SILENCING:
-        # No hand-back is needed before takeover begins.
-        self.state = RadarSessionState.STOCK
-      elif self.state == RadarSessionState.SILENCED:
-        self.state = RadarSessionState.HANDBACK
-      elif self.state == RadarSessionState.HANDBACK and \
-           (stock_radar_alive or self.state_frames >= RADAR_SESSION_LIMIT_FRAMES):
-        # Finish hand-back after recovery or timeout and keep radar ownership stock.
-        self.state = RadarSessionState.STOCK
-        self.handback_completed = True
-    else:
-      if self.state == RadarSessionState.HANDBACK:
-        # Restart takeover if hand-back is withdrawn before the process restarts.
-        self.state = RadarSessionState.STOCK
-      if self.state == RadarSessionState.STOCK and gate_passed and not self.handback_completed:
-        # Begin silencing only before motion. Adopt an already quiet radar only after the full
-        # ownership guard, not a normal short gap in stock traffic.
-        if stock_radar_gone:
-          self.state = RadarSessionState.SILENCED
-        elif standstill and not self.silencing_failed:
-          self.state = RadarSessionState.SILENCING
-      elif self.state == RadarSessionState.SILENCING:
-        if not stock_radar_alive:
-          self.state = RadarSessionState.SILENCED
-        elif session_refused or self.state_frames >= RADAR_SESSION_LIMIT_FRAMES:
-          carlog.error(f"radar silencing failed ({'refused' if session_refused else 'no response'}); staying stock")
-          self.state = RadarSessionState.STOCK
-          self.silencing_failed = True
-      elif self.state == RadarSessionState.SILENCED and stock_radar_alive:
-        # Stop synthetic traffic if stock traffic returns. While moving, stock keeps the bus
-        # until takeover can safely restart at standstill.
-        self.state = RadarSessionState.SILENCING if (standstill and not self.silencing_failed) else RadarSessionState.STOCK
-
-    self.state_frames = 0 if self.state != prev_state else self.state_frames + 1
-    return self.state
-
-
-RESUME_UNLATCH_LATCHED_FRAMES = int(CarControllerParams.RESUME_UNLATCH_LATCHED_T / DT_CTRL)
-RESUME_REPULSE_FRAMES = int(CarControllerParams.RESUME_REPULSE_T / DT_CTRL)
-LEAD_DEBOUNCE_FRAMES = int(CarControllerParams.LEAD_DEBOUNCE_T / DT_CTRL)
-RELEASE_DEBOUNCE_FRAMES = int(CarControllerParams.RELEASE_DEBOUNCE_T / DT_CTRL)
-BREAKAWAY_FRAMES = int(CarControllerParams.ACCEL_BREAKAWAY_T / DT_CTRL)
+  def update(self, lead_visible: bool) -> bool:
+    self.frames = self.frames + 1 if lead_visible != self.shown else 0
+    if self.frames >= (LEAD_SHOW_FRAMES if lead_visible else LEAD_HIDE_FRAMES):
+      self.shown = lead_visible
+      self.frames = 0
+    return self.shown
 
 
 class StandstillHold:
@@ -115,17 +65,22 @@ class StandstillHold:
     self.just_released = False
     self.latched_frames = 0  # frames waiting for the body ECU to release its hold
     self.repulsed = False
+    self.standstill_frames = 0
 
   def update(self, long_engaged: bool, stopping: bool, standstill: bool,
-             plan_accel: float, brake_hold: bool, gas_pressed: bool) -> None:
+             plan_accel: float, body_hold: bool, gas_pressed: bool) -> None:
     self.just_released = False
     if not long_engaged:
       self._reset()
       return
 
     was_holding = self.holding
-    # Debounce plan movement requests; driver throttle releases the hold immediately.
-    self.release_frames = self.release_frames + 1 if plan_accel > 0. else 0
+    self.standstill_frames = self.standstill_frames + 1 if standstill else 0
+    # Debounce plan movement requests: opening a hold just after arriving takes RELEASE_ACCEL,
+    # otherwise any positive plan. Driver throttle releases the hold immediately.
+    settling = self.standstill_frames <= RELEASE_SETTLE_FRAMES
+    release_accel = RELEASE_ACCEL if was_holding and settling else 0.
+    self.release_frames = self.release_frames + 1 if plan_accel > release_accel else 0
     plan_wants_go = self.release_frames >= RELEASE_DEBOUNCE_FRAMES
     # Keep STOPPING off once the plan or driver requests acceleration.
     release = gas_pressed or plan_wants_go
@@ -144,7 +99,7 @@ class StandstillHold:
       self.repulsed = False
 
     # Retry one unanswered body-latched release so a positive plan cannot remain blocked.
-    if self.latched_release and not self.holding and standstill and brake_hold and not gas_pressed:
+    if self.latched_release and not self.holding and standstill and body_hold and not gas_pressed:
       self.latched_frames += 1
       if self.latched_frames >= RESUME_REPULSE_FRAMES and not self.repulsed and self.unlatch_frames == 0:
         self.unlatch_frames = RESUME_UNLATCH_LATCHED_FRAMES
@@ -153,7 +108,7 @@ class StandstillHold:
       self.latched_frames = 0
 
     # Body ownership is valid only while the controller still requests a hold.
-    self.car_has_hold = self.holding and standstill and brake_hold
+    self.car_has_hold = self.holding and standstill and body_hold
 
   @property
   def stop_bits(self) -> bool:
@@ -170,50 +125,70 @@ class StandstillHold:
     return not self.car_has_hold
 
 
-class AdvertisedLead:
-  """Maintain consistent lead state across CRZ_CTRL and the 0x364 track.
+class AccelShaper:
+  """The CRZ_INFO command between the plan and the wire, shaped like stock MRCC's.
 
-  Advertisement follows perception rather than engagement. Visibility is debounced and the
-  last measurement is propagated through short vision gaps like a radar track.
+  A hold's release ramps up from the relaxed command, with a bounded breakaway while the car is
+  still stopped. Otherwise the plan is slew-limited, and positive commands follow stock's
+  ceiling and build rate at this speed and lift at stock's rate. The standstill hold's own
+  commands come last. accel_last is the command sent the frame before.
   """
 
   def __init__(self):
-    self.visible = False
-    self.flip_frames = 0
-    self.holding = False
-    self.lead = None
-    self.real_lead = None
-    self._measured = None
+    self.release_ramp: float | None = None
+    self.breakaway_frames = 0
 
-  def update(self, lead_visible: bool, d_rel: float, v_rel: float, holding: bool) -> None:
-    if lead_visible != self.visible:
-      self.flip_frames += 1
-      if self.flip_frames >= LEAD_DEBOUNCE_FRAMES:
-        self.visible = lead_visible
-        self.flip_frames = 0
-    else:
-      self.flip_frames = 0
+  def update(self, long_active: bool, plan_accel: float, accel_last: float, sm: StandstillHold,
+             standstill: bool, body_hold: bool, v_ego: float) -> float:
+    if sm.just_released:
+      # Never-latched stops relax in one frame; latched holds ramp from the relaxed command.
+      self.release_ramp = CarControllerParams.ACCEL_HOLD_LATCHED if sm.latched_release else \
+                          CarControllerParams.ACCEL_RELEASE_BAND
+    elif sm.holding or not long_active:
+      # Re-holds and driver overrides terminate the release ramp.
+      self.release_ramp = None
 
-    if 0. < d_rel <= mazdacan.DIST_OBJ_MAX:
-      self._measured = (d_rel, v_rel)
-    elif not self.visible:
-      # Expire stale state after the debounce window.
-      self._measured = None
-    elif self._measured is not None:
-      # Propagate range through the gap instead of repeating a frozen track.
-      d, v = self._measured
-      self._measured = (d + v * DT_CTRL, v)
-    self.real_lead = self._measured if self.visible else None
-    self.lead = self.real_lead
-    self.holding = holding
-
-  @property
-  def has_lead(self) -> bool:
-    return self.lead is not None
-
-  @property
-  def ctrl_phase(self) -> int:
-    # Use stock's relative-distance buckets and keep all lead fields consistent.
-    if not self.has_lead:
-      return 0
-    return 3 if self.holding else 2
+    accel = 0.
+    if long_active:
+      accel = float(np.clip(plan_accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
+      # Continue a bounded release ramp while stopped because the plan may not break static hold.
+      if self.release_ramp is None or not standstill:
+        self.breakaway_frames = 0
+      else:
+        self.breakaway_frames += 1
+      breakaway = standstill and self.breakaway_frames <= BREAKAWAY_FRAMES
+      # Bound breakaway by stock authority and by the plan-relative margin.
+      ramp_ceiling = max(accel, min(CarControllerParams.ACCEL_BREAKAWAY_MAX,
+                                    accel + CarControllerParams.ACCEL_BREAKAWAY_OVERSHOOT))
+      if self.release_ramp is not None and (self.release_ramp < accel or breakaway):
+        # The release ramp owns the command until it reaches the plan. Body-latched holds remain
+        # at the relaxed command until the body lets go.
+        accel = self.release_ramp
+        if not (sm.latched_release and body_hold):
+          # Follow a falling plan ceiling at the winddown limit.
+          self.release_ramp = max(min(self.release_ramp + CarControllerParams.ACCEL_RELEASE_RAMP * DT_CTRL, ramp_ceiling),
+                                  self.release_ramp + CarControllerParams.ACCEL_WINDDOWN_LIMIT)
+      else:
+        self.release_ramp = None
+        # Track overrides in accel_last so control resumes through the slew limiter.
+        accel = rate_limit(accel, accel_last, CarControllerParams.ACCEL_WINDDOWN_LIMIT,
+                           CarControllerParams.ACCEL_WINDUP_LIMIT)
+        if accel > 0.:
+          # Shape positive commands to stock MRCC's ceiling and build rate at this speed.
+          ceiling = float(np.interp(v_ego, CarControllerParams.ACCEL_CEILING_BP, CarControllerParams.ACCEL_CEILING_V))
+          build = float(np.interp(v_ego, CarControllerParams.ACCEL_BUILD_BP, CarControllerParams.ACCEL_BUILD_V)) * DT_CTRL
+          accel = min(accel, ceiling, max(accel_last, 0.) + build)
+        if accel_last > 0. and plan_accel >= 0.:
+          # Lift the throttle at stock's rate; a brake request bypasses this above.
+          accel = max(accel, accel_last + CarControllerParams.ACCEL_LIFT_LIMIT * DT_CTRL)
+      if sm.car_has_hold:
+        # Stop requesting brake hold after the body ECU takes ownership.
+        accel = CarControllerParams.ACCEL_HOLD_LATCHED
+      elif sm.holding:
+        # Freeze the braking command while STOPPING is asserted.
+        accel = min(accel, 0.) if plan_accel <= 0. else min(accel_last, 0.)
+      if sm.resume_unlatching:
+        # Bound the latched release pulse to stock's command range.
+        accel = min(max(accel, CarControllerParams.ACCEL_HOLD_LATCHED),
+                    CarControllerParams.ACCEL_RESUME_PULSE_MAX)
+    return accel

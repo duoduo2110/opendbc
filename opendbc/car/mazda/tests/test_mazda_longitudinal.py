@@ -11,10 +11,11 @@ RESUME_UNLATCHING pulse, the breakaway ramp, the gas override and the disengaged
 import pytest
 
 from opendbc.car import DT_CTRL
-from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, RELEASE_DEBOUNCE_FRAMES, RESUME_REPULSE_FRAMES,
-                                            RESUME_UNLATCH_LATCHED_FRAMES)
+from opendbc.car.mazda import mazdacan
+from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, LEAD_HIDE_FRAMES, LEAD_SHOW_FRAMES, RELEASE_DEBOUNCE_FRAMES,
+                                            RESUME_REPULSE_FRAMES, RESUME_UNLATCH_LATCHED_FRAMES, LeadIcon)
 from opendbc.car.mazda.tests.conftest import (CRZ_CTRL, CRZ_INFO, RADAR_STATIC, RADAR_UDS, LongCtrlState, accel_cmd_raw,
-                                              crz_info, frame, parse_frame, step_long)
+                                              crz_ctrl_lead, crz_info, frame, parse_frame, step_long)
 from opendbc.car.mazda.values import CarControllerParams
 
 STOPPING = LongCtrlState.stopping
@@ -68,11 +69,58 @@ def test_engaged_frame_rates_and_counters(cc, cs):
   assert cc.long_counter == 50 and cc.radar_counter == 10
 
 
-@pytest.mark.parametrize("gap", [1, 2, 3])
-def test_gap_setting_mirrors_driver(cc, cs, gap):
+@pytest.mark.parametrize("engaged", [False, True])
+def test_crz_ctrl_relays_hbc_arming_on_both_buses(cc, cs, engaged):
+  # Stock radar relays camera's HBC arming into CRZ_CTRL; synthetic radar must also carry the state.
+  kwargs = dict(accel=0.5) if engaged else dict(enabled=False, long_active=False, accel=0., long_state=OFF)
+  for armed in (False, True, True, False):
+    cc.frame = 0  # force emission
+    sends = step_long(cc, cs, hbc_request=armed, available=True, **kwargs)
+    for bus in (0, 2):
+      assert parse_frame(CRZ_CTRL, frame(sends, CRZ_CTRL, bus), bus)["NEW_SIGNAL_3"] == armed
+
+
+# leadDistanceBars counts up (1 closest, 3 farthest); DISTANCE_SETTING counts down (DBC:
+# 1 is 4 bars, 4 is 1 bar), so the wire carries 5 - bars. Measured on 576 stock segments:
+# DISTANCE_LESS (closer) raises the raw, DISTANCE_MORE lowers it; 0 only while unavailable.
+@pytest.mark.parametrize("bars, wire", [(1, 4), (2, 3), (3, 2)])
+def test_gap_setting_mirrors_driver(cc, cs, bars, wire):
   cc.frame = 0  # force emission on the first step
-  sends = step_long(cc, cs, gap=gap)
-  assert parse_frame(CRZ_CTRL, frame(sends, CRZ_CTRL))["DISTANCE_SETTING"] == gap
+  sends = step_long(cc, cs, gap=bars)
+  assert parse_frame(CRZ_CTRL, frame(sends, CRZ_CTRL))["DISTANCE_SETTING"] == wire
+
+
+@pytest.mark.parametrize("lead_visible", [True, False])
+@pytest.mark.parametrize("kwargs, bucket", [
+  (dict(accel=0.5), 2),
+  (dict(long_state=STOPPING, accel=-1.024, standstill=True), 3),
+  (dict(enabled=False, long_active=False, accel=0., long_state=OFF), 2),
+], ids=["following", "stopped", "disengaged"])
+def test_lead_shows_on_the_dash_but_not_in_the_tracks(cc, cs, kwargs, bucket, lead_visible):
+  # CRZ_CTRL carries the vision lead for the cluster; the tracks stay the stock empty capture.
+  cc.lead_icon.shown = lead_visible  # past the debounce, covered on its own below
+  cc.frame = 0  # force emission
+  sends = step_long(cc, cs, lead_visible=lead_visible, **kwargs)
+  for bus in (0, 2):
+    assert crz_ctrl_lead(frame(sends, CRZ_CTRL, bus)) == ((1, bucket) if lead_visible else (0, 0))
+    for addr, capture in mazdacan.RADAR_TRACK_MSGS.items():
+      assert frame(sends, addr, bus)[:7] == capture[:7], f"{addr:#x} left the empty capture"
+
+
+def test_lead_icon_rides_out_flicker():
+  icon = LeadIcon()
+
+  def run(visible, n):
+    return [icon.update(visible) for _ in range(n)]
+
+  # a marginal lead flickering just inside the show debounce never reaches the dash
+  for _ in range(5):
+    assert not any(run(True, LEAD_SHOW_FRAMES - 1) + run(False, 1))
+  assert run(True, LEAD_SHOW_FRAMES) == [False] * (LEAD_SHOW_FRAMES - 1) + [True]
+  # dropouts just inside the hide debounce keep it
+  for _ in range(5):
+    assert all(run(False, LEAD_HIDE_FRAMES - 1) + run(True, 1))
+  assert run(False, LEAD_HIDE_FRAMES) == [True] * (LEAD_HIDE_FRAMES - 1) + [False]
 
 
 def test_stop_emits_hold_then_relaxes(cc, cs):
@@ -92,7 +140,7 @@ def test_stop_emits_hold_then_relaxes(cc, cs):
   # once the body ECU takes the hold over, stock stops asking for the brakes and so do we
   relaxed = []
   for _ in range(seconds(1.0)):
-    cmd = accel_cmd_raw(step_long(cc, cs, long_state=STOPPING, accel=-1.024, standstill=True, brake_hold=True))
+    cmd = accel_cmd_raw(step_long(cc, cs, long_state=STOPPING, accel=-1.024, standstill=True, body_hold=True))
     if cmd is not None:
       relaxed.append(cmd)
   assert relaxed and set(relaxed) == {round(CarControllerParams.ACCEL_HOLD_LATCHED * 1000)}
@@ -293,8 +341,8 @@ def test_release_keeps_climbing_until_the_car_actually_moves(cc, cs):
 
 
 @pytest.mark.parametrize("plan, cap", [
-  # A small plan permits only the configured relative margin.
-  (0.11, 0.11 + CarControllerParams.ACCEL_BREAKAWAY_OVERSHOOT),
+  # A small plan permits only the configured relative margin. Smaller still never opens the hold.
+  (0.3, 0.3 + CarControllerParams.ACCEL_BREAKAWAY_OVERSHOOT),
   # A large plan remains bounded by stock breakaway authority.
   (1.1, CarControllerParams.ACCEL_BREAKAWAY_MAX),
 ], ids=["small_plan", "big_plan"])
@@ -331,12 +379,12 @@ def test_breakaway_ceiling_lowered_by_the_plan_is_walked_down_not_stepped(cc, cs
 def test_missed_pulse_retry_keeps_the_stock_latched_tuple(cc, cs):
   """If the body never answers the pulse the command sits at the relaxed hold under a positive
   plan; the one retry is byte-for-byte the first pulse's shape: stop bits down, command at
-  -1 raw, RESUME_UNLATCHING set, and nothing climbs while GEAR.BRAKE_HOLD stays up."""
+  -1 raw, RESUME_UNLATCHING set, and nothing climbs while the body still holds."""
   for _ in range(seconds(2.0)):
-    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, brake_hold=True, **LEAD_4M)
+    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, body_hold=True, **LEAD_4M)
   assert cc.stop_and_go.car_has_hold
   rows = crz_info_rows(cc, cs, RELEASE_DEBOUNCE_FRAMES + 2 * RESUME_REPULSE_FRAMES + seconds(1.0),
-                       accel=1.0, standstill=True, brake_hold=True, **LEAD_4M)
+                       accel=1.0, standstill=True, body_hold=True, **LEAD_4M)
   pulses = sum(1 for a, b in zip(rows, rows[1:], strict=False) if b[2] and not a[2])
   assert pulses == 2, f"expected the pulse and exactly one retry, got {pulses}"
   assert all(cmd == -1 and not stop for cmd, stop, unl in rows if unl), "a pulse frame left the latched tuple"
@@ -359,11 +407,11 @@ def test_breakaway_gives_up_so_a_stuck_car_is_not_leaned_on(cc, cs):
 def test_breakaway_never_climbs_against_a_latched_body(cc, cs):
   """Body-latched holds remain pinned until the body acknowledges the release pulse."""
   for _ in range(seconds(2.0)):
-    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, brake_hold=True, **LEAD_4M)
+    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, body_hold=True, **LEAD_4M)
   assert cc.stop_and_go.car_has_hold
 
   for _ in range(RESUME_UNLATCH_LATCHED_FRAMES + seconds(1.0)):
-    step_long(cc, cs, accel=0.5, standstill=True, brake_hold=True, **LEAD_4M)
+    step_long(cc, cs, accel=0.5, standstill=True, body_hold=True, **LEAD_4M)
     assert cc.accel_last <= CarControllerParams.ACCEL_RESUME_PULSE_MAX + 1e-6, \
       f"breakaway climbed against a still-latched body: {cc.accel_last:.2f}"
 
@@ -402,7 +450,7 @@ def test_latched_release_speaks_the_stock_pulse_shape(cc, cs, drop_wire_frames):
   for _ in range(seconds(0.5)):
     step_long(cc, cs, long_state=STOPPING, accel=-1.5, standstill=False, **LEAD_4M)
   for _ in range(seconds(2.0)):
-    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, brake_hold=True, **LEAD_4M)
+    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, body_hold=True, **LEAD_4M)
   assert cc.accel_last == pytest.approx(CarControllerParams.ACCEL_HOLD_LATCHED, rel=1e-6, abs=1e-12)
 
   # Model the measured one-to-three-frame body response.
@@ -411,7 +459,7 @@ def test_latched_release_speaks_the_stock_pulse_shape(cc, cs, drop_wire_frames):
   window = RELEASE_DEBOUNCE_FRAMES + RESUME_UNLATCH_LATCHED_FRAMES + seconds(1.0)
   for i in range(window):
     body_holds = pulse_started is None or i < pulse_started + 2 * drop_wire_frames
-    dat = frame(step_long(cc, cs, accel=1.0, standstill=True, brake_hold=body_holds, **LEAD_4M), CRZ_INFO)
+    dat = frame(step_long(cc, cs, accel=1.0, standstill=True, body_hold=body_holds, **LEAD_4M), CRZ_INFO)
     if dat is not None:
       cmd, _, unl = crz_info(dat)
       rows.append((cmd, unl, body_holds))
@@ -437,9 +485,9 @@ def test_latched_release_pulse_starts_at_the_release(cc, cs):
   for _ in range(seconds(0.5)):
     step_long(cc, cs, long_state=STOPPING, accel=-1.5, standstill=False, **LEAD_4M)
   for _ in range(seconds(2.0)):
-    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, brake_hold=True, **LEAD_4M)
+    step_long(cc, cs, long_state=STOPPING, accel=-1.3, standstill=True, body_hold=True, **LEAD_4M)
 
-  rows = crz_info_rows(cc, cs, RELEASE_DEBOUNCE_FRAMES + seconds(0.5), accel=1.0, standstill=True, brake_hold=True, **LEAD_4M)
+  rows = crz_info_rows(cc, cs, RELEASE_DEBOUNCE_FRAMES + seconds(0.5), accel=1.0, standstill=True, body_hold=True, **LEAD_4M)
 
   # the stop bits are already down during a body-latched hold, so the pulse's deadline is
   # the debounce itself: it must start on the first wire frame after the plan's request lands
